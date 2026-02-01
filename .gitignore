@@ -21,9 +21,22 @@ supabase/.temp/
 .vscode/*
 !.vscode/extensions.json
 .idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Document files (keep README.md)
+*.docx
+*.pdf
+*.txt
+
+# Temp folders
+.temp/
+tmp/
+notes/
