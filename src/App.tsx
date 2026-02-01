@@ -25,6 +25,9 @@ import { AdCard } from './components/AdCard'
 import { Onboarding } from './components/Onboarding'
 import './App.css'
 
+// Dev-only logging
+const DEV = import.meta.env.DEV
+
 // Share icon (arrow up from box) as inline SVG component
 function ShareIcon() {
   return (
@@ -189,7 +192,7 @@ function App() {
 
   // Log feed_view event and debug location state when tab changes
   useEffect(() => {
-    console.log('[location] mode', tab, { deviceLocation, somewherePlace })
+    if (DEV) console.log('[location] mode', tab, { deviceLocation, somewherePlace })
     logEvent('feed_view', { mode: tab })
   }, [tab, deviceLocation, somewherePlace])
 
@@ -279,7 +282,7 @@ function App() {
       })
 
       if (error) {
-        console.error('[report] RPC error:', error)
+        if (DEV) console.error('[report] RPC error:', error)
         setReportError('Something went wrong. Please try again.')
         setReportSubmitting(false)
         return
@@ -290,7 +293,7 @@ function App() {
       closeReportModal()
       showToast('Thanks. This helps keep the space safe.')
     } catch (err) {
-      console.error('[report] exception:', err)
+      if (DEV) console.error('[report] exception:', err)
       setReportError('Something went wrong. Please try again.')
       setReportSubmitting(false)
     }
@@ -324,7 +327,7 @@ function App() {
 
   // World feed - uses unified fetchFeed with mode='world'
   const loadWorld = useCallback(async (reset: boolean) => {
-    console.log('[location] fetching world feed', { deviceLocation, somewherePlace, usedLatLng: null })
+    if (DEV) console.log('[location] fetching world feed', { deviceLocation, somewherePlace, usedLatLng: null })
     setWorldFeed((prev) => ({ ...prev, loading: true }))
     const cursor = reset ? null : worldFeed.cursor
     const result = await fetchFeed({ mode: 'world', cursor })
@@ -354,13 +357,13 @@ function App() {
       Number.isNaN(place.lat) ||
       Number.isNaN(place.lng)
     ) {
-      console.error('[loadPlace] invalid coordinates for place:', place.name, { lat: place.lat, lng: place.lng })
+      if (DEV) console.error('[loadPlace] invalid coordinates for place:', place.name, { lat: place.lat, lng: place.lng })
       setError('Could not determine location for this place.')
       return
     }
 
-    console.log('[location] fetching somewhere feed', { deviceLocation, somewherePlace, usedLatLng: { lat: place.lat, lng: place.lng } })
-    console.log('[loadPlace]', place.name, reset ? '(reset)' : '(more)', `radius=${radiusM}m`)
+    if (DEV) console.log('[location] fetching somewhere feed', { deviceLocation, somewherePlace, usedLatLng: { lat: place.lat, lng: place.lng } })
+    if (DEV) console.log('[loadPlace]', place.name, reset ? '(reset)' : '(more)', `radius=${radiusM}m`)
     setPlaceFeed((prev) => ({ ...prev, loading: true }))
     const cursor = reset ? null : placeFeed.cursor
     const result = await fetchFeed({
@@ -389,14 +392,14 @@ function App() {
   // On initial fetch (reset=true): try progressively larger radii until MIN_RESULTS or MAX_ATTEMPTS
   // On pagination (reset=false): use the stored nearMeRadius
   const loadNearMe = useCallback(async (lat: number, lng: number, reset: boolean) => {
-    console.log('[location] fetching near feed', { deviceLocation, somewherePlace, usedLatLng: { lat, lng } })
-    console.log('[nearMe] load', reset ? '(reset, auto-expand)' : '(more)')
+    if (DEV) console.log('[location] fetching near feed', { deviceLocation, somewherePlace, usedLatLng: { lat, lng } })
+    if (DEV) console.log('[nearMe] load', reset ? '(reset, auto-expand)' : '(more)')
     setPlaceFeed((prev) => ({ ...prev, loading: true }))
 
     // For pagination, use stored radius
     if (!reset) {
       const cursor = placeFeed.cursor
-      console.log('[nearMe] pagination with radius:', nearMeRadius)
+      if (DEV) console.log('[nearMe] pagination with radius:', nearMeRadius)
       const result = await fetchFeed({
         mode: 'near',
         lat,
@@ -426,13 +429,13 @@ function App() {
 
     for (const radius of NEAR_ME_RADII) {
       if (attempts >= MAX_ATTEMPTS) {
-        console.log('[nearMe] max attempts reached, using last radius:', usedRadius)
+        if (DEV) console.log('[nearMe] max attempts reached, using last radius:', usedRadius)
         break
       }
 
       attempts++
       usedRadius = radius
-      console.log('[nearMe] trying radius:', radius, `(attempt ${attempts}/${MAX_ATTEMPTS})`)
+      if (DEV) console.log('[nearMe] trying radius:', radius, `(attempt ${attempts}/${MAX_ATTEMPTS})`)
 
       const result = await fetchFeed({
         mode: 'near',
@@ -443,7 +446,7 @@ function App() {
       })
 
       if (result.confessions.length >= MIN_RESULTS || radius === NEAR_ME_RADII[NEAR_ME_RADII.length - 1]) {
-        console.log('[nearMe] found', result.confessions.length, 'posts at radius:', radius)
+        if (DEV) console.log('[nearMe] found', result.confessions.length, 'posts at radius:', radius)
         setNearMeRadius(radius)
         setPlaceFeed({
           confessions: result.confessions,
@@ -455,11 +458,11 @@ function App() {
         return
       }
 
-      console.log('[nearMe] only', result.confessions.length, 'posts, expanding...')
+      if (DEV) console.log('[nearMe] only', result.confessions.length, 'posts, expanding...')
     }
 
     // Fallback: use last tried radius
-    console.log('[nearMe] using fallback radius:', usedRadius)
+    if (DEV) console.log('[nearMe] using fallback radius:', usedRadius)
     setNearMeRadius(usedRadius)
     const result = await fetchFeed({
       mode: 'near',
@@ -479,32 +482,32 @@ function App() {
 
   // Handle Near me click - request location and use auto-expand radius
   async function handleNearMeClick() {
-    console.log('[near] clicked')
+    if (DEV) console.log('[near] clicked')
     setTab('near')
     setError('')
     setNotice('')
 
     // If we already have device location, use it directly (never use somewherePlace)
     if (deviceLocation) {
-      console.log('[location] mode near', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
+      if (DEV) console.log('[location] mode near', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
       loadNearMe(deviceLocation.lat, deviceLocation.lng, true)
       return
     }
 
     // Request location
     if (geoStatus === 'requesting') {
-      console.log('[near] already requesting')
+      if (DEV) console.log('[near] already requesting')
       return
     }
 
     if (!navigator.geolocation) {
-      console.log('[near] geolocation not supported')
+      if (DEV) console.log('[near] geolocation not supported')
       setGeoStatus('error')
       setGeoError('Geolocation not supported')
       return
     }
 
-    console.log('[near] requesting location...')
+    if (DEV) console.log('[near] requesting location...')
     setGeoStatus('requesting')
     setGeoError(null)
 
@@ -512,18 +515,18 @@ function App() {
       (pos) => {
         const lat = pos.coords.latitude
         const lng = pos.coords.longitude
-        console.log('[near] success:', lat, lng)
+        if (DEV) console.log('[near] success:', lat, lng)
 
         // Store device location (NEVER overwritten by Somewhere)
         setDeviceLocation({ lat, lng })
         setGeoStatus('granted')
         setGeoError(null)
 
-        console.log('[location] mode near', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
+        if (DEV) console.log('[location] mode near', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
         loadNearMe(lat, lng, true)
       },
       (err) => {
-        console.log('[near] error:', err.code, err.message)
+        if (DEV) console.log('[near] error:', err.code, err.message)
         if (err.code === err.PERMISSION_DENIED) {
           setGeoStatus('denied')
           setGeoError('Location permission denied. Try "Somewhere" instead.')
@@ -543,51 +546,51 @@ function App() {
   // Handle Somewhere "Listen" - calls edge function to resolve place
   async function handleSomewhereListen() {
     const query = somewhereQuery.trim()
-    console.log('[somewhere] query:', query)
+    if (DEV) console.log('[somewhere] query:', query)
     setError('')
     setNotice('')
 
     // Check in-memory cache first
     const cached = getCachedPlace(query)
     if (cached) {
-      console.log('[somewhere] cache HIT:', cached.name)
+      if (DEV) console.log('[somewhere] cache HIT:', cached.name)
       setSomewherePlace(cached)
-      console.log('[location] mode somewhere', { deviceLocation, somewherePlace: cached, usedLatLng: { lat: cached.lat, lng: cached.lng } })
+      if (DEV) console.log('[location] mode somewhere', { deviceLocation, somewherePlace: cached, usedLatLng: { lat: cached.lat, lng: cached.lng } })
       loadPlace(cached, true)
       return
     }
 
-    console.log('[somewhere] cache MISS, calling edge function')
+    if (DEV) console.log('[somewhere] cache MISS, calling edge function')
 
     if (query.length < 2) {
-      console.log('[somewhere] query too short')
+      if (DEV) console.log('[somewhere] query too short')
       return
     }
 
     setResolvingPlace(true)
     try {
       const result = await resolvePlace(query)
-      console.log('[somewhere] result:', result)
+      if (DEV) console.log('[somewhere] result:', result)
 
       if (result.ok) {
         // Success: set somewherePlace (NEVER touch deviceLocation)
         const place: ResolvedPlace = { query, name: result.place.name, lat: result.place.lat, lng: result.place.lng }
         setCachedPlace(place)
         setSomewherePlace(place)
-        console.log('[location] mode somewhere', { deviceLocation, somewherePlace: place, usedLatLng: { lat: place.lat, lng: place.lng } })
+        if (DEV) console.log('[location] mode somewhere', { deviceLocation, somewherePlace: place, usedLatLng: { lat: place.lat, lng: place.lng } })
         loadPlace(place, true)
-        console.log('[somewhere] place set:', place.name)
+        if (DEV) console.log('[somewhere] place set:', place.name)
       } else if (result.reason === 'NOT_FOUND') {
         // NOT_FOUND: fallback to Near me
-        console.log('[somewhere] NOT_FOUND, falling back to Near me')
+        if (DEV) console.log('[somewhere] NOT_FOUND, falling back to Near me')
         fallbackToNearMe()
       } else {
         // ERROR: show generic error, do NOT fallback
-        console.error('[somewhere] ERROR:', result.message)
+        if (DEV) console.error('[somewhere] ERROR:', result.message)
         setError('Could not resolve that place right now.')
       }
     } catch (err) {
-      console.error('[somewhere] exception:', err)
+      if (DEV) console.error('[somewhere] exception:', err)
       setError('Failed to look up place')
     } finally {
       setResolvingPlace(false)
@@ -596,35 +599,35 @@ function App() {
 
   // Fallback to Near me when place not found
   function fallbackToNearMe() {
-    console.log('[fallback] NOT_FOUND — switching to near me')
+    if (DEV) console.log('[fallback] NOT_FOUND — switching to near me')
     setError('')
     setNotice('Could not find that place — listening near you instead.')
 
     // If we already have deviceLocation, use it immediately (never use somewherePlace)
     if (deviceLocation) {
-      console.log('[fallback] using existing deviceLocation:', deviceLocation)
+      if (DEV) console.log('[fallback] using existing deviceLocation:', deviceLocation)
       setTab('near')
-      console.log('[location] mode near (fallback)', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
+      if (DEV) console.log('[location] mode near (fallback)', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
       loadNearMe(deviceLocation.lat, deviceLocation.lng, true)
       return
     }
 
     // Otherwise, request location (same as handleNearMeClick)
     if (geoStatus === 'requesting') {
-      console.log('[fallback] already requesting location')
+      if (DEV) console.log('[fallback] already requesting location')
       setTab('near')
       return
     }
 
     if (!navigator.geolocation) {
-      console.log('[fallback] geolocation not supported')
+      if (DEV) console.log('[fallback] geolocation not supported')
       setGeoStatus('error')
       setGeoError('Geolocation not supported')
       setTab('near')
       return
     }
 
-    console.log('[fallback] requesting location...')
+    if (DEV) console.log('[fallback] requesting location...')
     setGeoStatus('requesting')
     setGeoError(null)
     setTab('near')
@@ -633,18 +636,18 @@ function App() {
       (pos) => {
         const lat = pos.coords.latitude
         const lng = pos.coords.longitude
-        console.log('[fallback] location success:', lat, lng)
+        if (DEV) console.log('[fallback] location success:', lat, lng)
 
         // Store device location (NEVER overwritten by Somewhere)
         setDeviceLocation({ lat, lng })
         setGeoStatus('granted')
         setGeoError(null)
 
-        console.log('[location] mode near (fallback)', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
+        if (DEV) console.log('[location] mode near (fallback)', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
         loadNearMe(lat, lng, true)
       },
       (err) => {
-        console.log('[fallback] location error:', err.code, err.message)
+        if (DEV) console.log('[fallback] location error:', err.code, err.message)
         if (err.code === err.PERMISSION_DENIED) {
           setGeoStatus('denied')
           setGeoError('Location permission denied.')
@@ -663,11 +666,11 @@ function App() {
 
   // Pick a popular place (for Somewhere mode only)
   function handlePickPlace(place: CachedPlace) {
-    console.log('[somewhere] picked:', place.name)
+    if (DEV) console.log('[somewhere] picked:', place.name)
     const resolved: ResolvedPlace = { query: place.name, name: place.name, lat: place.lat, lng: place.lng }
     setSomewherePlace(resolved)
     setCachedPlace(resolved)
-    console.log('[location] mode somewhere (picked)', { deviceLocation, somewherePlace: resolved, usedLatLng: { lat: resolved.lat, lng: resolved.lng } })
+    if (DEV) console.log('[location] mode somewhere (picked)', { deviceLocation, somewherePlace: resolved, usedLatLng: { lat: resolved.lat, lng: resolved.lng } })
     loadPlace(resolved, true)
   }
 
@@ -696,7 +699,7 @@ function App() {
     const placeLabel = deviceLocation ? 'Near you' : undefined
 
     // Debug log showing what coords we're using for this post
-    console.log('[submit] posting confession', { 
+    if (DEV) console.log('[submit] posting confession', { 
       mode: tab, 
       deviceLocation, 
       somewherePlace, 

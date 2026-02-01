@@ -17,7 +17,7 @@ function normalizeQuery(q: string): string {
 export function getCachedPlace(query: string): ResolvedPlace | null {
   const key = normalizeQuery(query)
   const result = cache.get(key) || null
-  console.log('[cache]', key, result ? 'HIT' : 'MISS')
+  if (import.meta.env.DEV) console.log('[cache]', key, result ? 'HIT' : 'MISS')
   return result
 }
 

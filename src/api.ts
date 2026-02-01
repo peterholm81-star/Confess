@@ -1,6 +1,9 @@
 import { supabase } from './supabase'
 import type { Confession } from './supabase'
 
+// Dev-only logging
+const DEV = import.meta.env.DEV
+
 // =============================================================================
 // UNIFIED FEED API
 // =============================================================================
@@ -70,13 +73,13 @@ export async function fetchFeed(params: FetchFeedParams): Promise<FeedResult> {
   const { mode, cursor, limit = DEFAULT_LIMIT, lat, lng, radiusM = 1000 } = params
   
   if (!supabase) {
-    console.warn('[fetchFeed] supabase not configured')
+    if (DEV) console.warn('[fetchFeed] supabase not configured')
     return { confessions: [], nextCursor: null, hasMore: false }
   }
 
   // Validate near mode params
   if (mode === 'near' && (lat == null || lng == null)) {
-    console.warn('[fetchFeed] near mode requires lat/lng')
+    if (DEV) console.warn('[fetchFeed] near mode requires lat/lng')
     return { confessions: [], nextCursor: null, hasMore: false }
   }
 
@@ -98,7 +101,7 @@ export async function fetchFeed(params: FetchFeedParams): Promise<FeedResult> {
     const { data, error } = await supabase.rpc('get_confess_feed', rpcParams)
 
     if (error) {
-      console.warn('[fetchFeed] RPC error:', error.message)
+      if (DEV) console.warn('[fetchFeed] RPC error:', error.message)
       return { confessions: [], nextCursor: null, hasMore: false }
     }
 
@@ -114,10 +117,10 @@ export async function fetchFeed(params: FetchFeedParams): Promise<FeedResult> {
         }
       : null
 
-    console.log(`[fetchFeed] ${mode}: ${confessions.length} items, hasMore=${hasMore}`)
+    if (DEV) console.log(`[fetchFeed] ${mode}: ${confessions.length} items, hasMore=${hasMore}`)
     return { confessions, nextCursor, hasMore }
   } catch (err) {
-    console.error('[fetchFeed] exception:', err)
+    if (DEV) console.error('[fetchFeed] exception:', err)
     return { confessions: [], nextCursor: null, hasMore: false }
   }
 }
@@ -185,7 +188,7 @@ export async function insertConfession(params: InsertConfessionParams): Promise<
         return { ok: false, error: 'RATE_LIMIT', message: 'Slow down — try again in a few seconds.' }
       }
       
-      console.error('[insertConfession] RPC error:', msg)
+      if (DEV) console.error('[insertConfession] RPC error:', msg)
       return { ok: false, error: 'ERROR', message: 'Could not save confession' }
     }
 
@@ -193,11 +196,11 @@ export async function insertConfession(params: InsertConfessionParams): Promise<
     const row = Array.isArray(data) && data.length > 0 ? data[0] : data
     
     if (!row || !row.id) {
-      console.error('[insertConfession] No row returned')
+      if (DEV) console.error('[insertConfession] No row returned')
       return { ok: false, error: 'ERROR', message: 'Could not save confession' }
     }
 
-    console.log('[insertConfession] success:', row.id)
+    if (DEV) console.log('[insertConfession] success:', row.id)
     return { 
       ok: true, 
       confession: {
@@ -210,7 +213,7 @@ export async function insertConfession(params: InsertConfessionParams): Promise<
       }
     }
   } catch (err) {
-    console.error('[insertConfession] exception:', err)
+    if (DEV) console.error('[insertConfession] exception:', err)
     return { ok: false, error: 'ERROR', message: 'Could not save confession' }
   }
 }
@@ -232,7 +235,7 @@ export async function fetchPopularPlaces(): Promise<CachedPlace[]> {
     .limit(10)
 
   if (error) {
-    console.warn('[api] fetchPopularPlaces error:', error.message)
+    if (DEV) console.warn('[api] fetchPopularPlaces error:', error.message)
     return []
   }
 
@@ -287,10 +290,10 @@ function is404Error(error: unknown): { is404: boolean; source: string } {
 
 // Call edge function to resolve a place query
 export async function resolvePlace(query: string): Promise<ResolvePlaceResult> {
-  console.log('[resolvePlace] start:', query)
+  if (DEV) console.log('[resolvePlace] start:', query)
   
   if (!supabase) {
-    console.error('[resolvePlace] supabase is null')
+    if (DEV) console.error('[resolvePlace] supabase is null')
     return { ok: false, reason: 'ERROR', message: 'Not configured' }
   }
 
@@ -299,24 +302,24 @@ export async function resolvePlace(query: string): Promise<ResolvePlaceResult> {
       body: { q: query },
     })
 
-    console.log('[resolvePlace] response:', { data, error })
+    if (DEV) console.log('[resolvePlace] response:', { data, error })
 
     // Handle Supabase invoke error
     if (error) {
       // Check if it's a 404 (NOT_FOUND)
       const { is404, source } = is404Error(error)
       if (is404) {
-        console.log(`[resolvePlace] NOT_FOUND (status 404 via ${source})`)
+        if (DEV) console.log(`[resolvePlace] NOT_FOUND (status 404 via ${source})`)
         return { ok: false, reason: 'NOT_FOUND' }
       }
       // Genuine error (network, 5xx, etc)
-      console.error('[resolvePlace] invoke error:', error.message)
+      if (DEV) console.error('[resolvePlace] invoke error:', error.message)
       return { ok: false, reason: 'ERROR', message: error.message }
     }
 
     // Check for NOT_FOUND response from edge function (200 with ok:false)
     if (data?.ok === false && data?.reason === 'NOT_FOUND') {
-      console.log('[resolvePlace] NOT_FOUND (from response body)')
+      if (DEV) console.log('[resolvePlace] NOT_FOUND (from response body)')
       return { ok: false, reason: 'NOT_FOUND' }
     }
 
@@ -324,29 +327,29 @@ export async function resolvePlace(query: string): Promise<ResolvePlaceResult> {
     if (data?.error) {
       const dataErr = String(data.error).toLowerCase()
       if (dataErr.includes('not found') || dataErr.includes('no results')) {
-        console.log('[resolvePlace] NOT_FOUND (from data.error)')
+        if (DEV) console.log('[resolvePlace] NOT_FOUND (from data.error)')
         return { ok: false, reason: 'NOT_FOUND' }
       }
-      console.error('[resolvePlace] edge error:', data.error)
+      if (DEV) console.error('[resolvePlace] edge error:', data.error)
       return { ok: false, reason: 'ERROR', message: data.error }
     }
 
     // Validate success response has coordinates
     if (!data || typeof data.lat !== 'number' || typeof data.lng !== 'number') {
-      console.log('[resolvePlace] NOT_FOUND (missing coords)')
+      if (DEV) console.log('[resolvePlace] NOT_FOUND (missing coords)')
       return { ok: false, reason: 'NOT_FOUND' }
     }
 
-    console.log('[resolvePlace] success:', data.name, data.lat, data.lng)
+    if (DEV) console.log('[resolvePlace] success:', data.name, data.lat, data.lng)
     return { ok: true, place: { lat: data.lat, lng: data.lng, name: data.name || query } }
   } catch (err) {
     // Check if caught exception is a 404
     const { is404, source } = is404Error(err)
     if (is404) {
-      console.log(`[resolvePlace] NOT_FOUND (exception 404 via ${source})`)
+      if (DEV) console.log(`[resolvePlace] NOT_FOUND (exception 404 via ${source})`)
       return { ok: false, reason: 'NOT_FOUND' }
     }
-    console.error('[resolvePlace] exception:', err)
+    if (DEV) console.error('[resolvePlace] exception:', err)
     return { ok: false, reason: 'ERROR', message: 'Network error' }
   }
 }
