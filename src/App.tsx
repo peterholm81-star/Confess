@@ -11,18 +11,27 @@ import {
   type InsertConfessionResult,
 } from './api'
 import { getCachedPlace, setCachedPlace, getRandomFromList, type ResolvedPlace } from './placeCache'
+import { logEvent } from './analytics'
+import {
+  initSessionIfNeeded,
+  onAppBackground,
+  onAppForeground,
+  recordPageFetch,
+  isAdArmed,
+  hasAdShown,
+  markAdShown,
+} from './state/session'
+import { AdCard } from './components/AdCard'
+import { Onboarding } from './components/Onboarding'
 import './App.css'
 
-// Hush icon (finger over lips) as inline SVG component
-function HushIcon() {
+// Share icon (arrow up from box) as inline SVG component
+function ShareIcon() {
   return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="11" r="7" />
-      <circle cx="9.5" cy="9.5" r="0.8" fill="currentColor" stroke="none" />
-      <circle cx="14.5" cy="9.5" r="0.8" fill="currentColor" stroke="none" />
-      <path d="M10 13.5 Q12 14.5 14 13.5" />
-      <path d="M12 19 L12 13" strokeWidth="2.5" />
-      <ellipse cx="12" cy="12.8" rx="1.2" ry="1.5" fill="currentColor" stroke="none" />
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+      <polyline points="16 6 12 2 8 6" />
+      <line x1="12" y1="2" x2="12" y2="15" />
     </svg>
   )
 }
@@ -35,7 +44,6 @@ const SHARE_TEXT = `If no one ever knew, what would you…?
 
 A quiet place for the things people never admit.
 Nothing lasts.`
-const RULES_ACK_PREFIX = 'confess_rules_ack_'
 const ENABLE_CARD_GLOW = false // Toggle subtle glow effect on confession cards
 
 // Near me auto-expand radius settings
@@ -63,35 +71,12 @@ const REPORT_REASONS: { value: ReportReason; label: string }[] = [
   { value: 'other', label: 'Something else' },
 ]
 
-// Get today's date as YYYY-MM-DD in local timezone
-function getTodayKey(): string {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-// Check if rules were acknowledged today
-function hasAcknowledgedToday(): boolean {
-  try {
-    return localStorage.getItem(RULES_ACK_PREFIX + getTodayKey()) === '1'
-  } catch {
-    return false
-  }
-}
-
-// Store acknowledgment for today
-function acknowledgeRules(): void {
-  try {
-    localStorage.setItem(RULES_ACK_PREFIX + getTodayKey(), '1')
-  } catch {
-    // Ignore storage errors
-  }
-}
-
 type FeedState = {
   confessions: Confession[]
   cursor: PageCursor
   hasMore: boolean
   loading: boolean
+  hasFetched: boolean // true after first fetch attempt completes
 }
 
 const emptyFeed: FeedState = {
@@ -99,6 +84,7 @@ const emptyFeed: FeedState = {
   cursor: null,
   hasMore: false,
   loading: false,
+  hasFetched: false,
 }
 
 function App() {
@@ -108,8 +94,8 @@ function App() {
   const [notice, setNotice] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  // User location state (for writing confessions)
-  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null)
+  // Device GPS location (ONLY for "near" mode - never overwritten by Somewhere)
+  const [deviceLocation, setDeviceLocation] = useState<{ lat: number; lng: number } | null>(null)
   const [geoStatus, setGeoStatus] = useState<GeoStatus>('idle')
   const [geoError, setGeoError] = useState<string | null>(null)
 
@@ -118,8 +104,8 @@ function App() {
   const [worldFeed, setWorldFeed] = useState<FeedState>(emptyFeed)
   const [placeFeed, setPlaceFeed] = useState<FeedState>(emptyFeed)
 
-  // Current listening place (shared by Near me + Somewhere)
-  const [currentPlace, setCurrentPlace] = useState<ResolvedPlace | null>(null)
+  // Somewhere place (ONLY for "somewhere" mode - resolved from search)
+  const [somewherePlace, setSomewherePlace] = useState<ResolvedPlace | null>(null)
   const [somewhereQuery, setSomewhereQuery] = useState('')
   const [popularPlaces, setPopularPlaces] = useState<CachedPlace[]>([])
   const [resolvingPlace, setResolvingPlace] = useState(false)
@@ -127,16 +113,27 @@ function App() {
   // Near me auto-expand radius (stored for pagination)
   const [nearMeRadius, setNearMeRadius] = useState<number>(NEAR_ME_RADII[NEAR_ME_RADII.length - 1])
 
-  // Rules modal state
-  const [showRulesModal, setShowRulesModal] = useState(() => !hasAcknowledgedToday())
-  const [rulesChecked, setRulesChecked] = useState(false)
-
   // Toast state
   const [toast, setToast] = useState<string | null>(null)
 
   // FAB (floating action button) state
   const [showFab, setShowFab] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Ad insertion state (tracks if ad has been inserted this session)
+  const [adInserted, setAdInserted] = useState(false)
+  const [adInsertIndex, setAdInsertIndex] = useState<number | null>(null)
+  const adMarkedRef = useRef(false) // Guard to call markAdShown only once
+
+  // Onboarding state
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    return !localStorage.getItem('lethe_onboarding_seen')
+  })
+
+  function handleOnboardingContinue() {
+    localStorage.setItem('lethe_onboarding_seen', 'true')
+    setShowOnboarding(false)
+  }
 
   // Report modal state
   const [reportConfessionId, setReportConfessionId] = useState<string | null>(null)
@@ -154,6 +151,63 @@ function App() {
     window.addEventListener('scroll', handleScroll, { passive: true })
     return () => window.removeEventListener('scroll', handleScroll)
   }, [])
+
+  // Initialize session manager on mount
+  useEffect(() => {
+    initSessionIfNeeded()
+  }, [])
+
+  // Handle app visibility changes for session management
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState === 'hidden') {
+        onAppBackground()
+      } else if (document.visibilityState === 'visible') {
+        // Check if ad was previously shown before foreground
+        const wasAdShown = hasAdShown()
+        onAppForeground()
+        // If session was reset (adShown became false), reset our local ad state
+        if (wasAdShown && !hasAdShown()) {
+          setAdInserted(false)
+          setAdInsertIndex(null)
+          adMarkedRef.current = false
+          if (import.meta.env.DEV) {
+            console.log('[ads] Ad state reset (new session)')
+          }
+        }
+      }
+    }
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
+  // Log session_start event on mount
+  useEffect(() => {
+    logEvent('session_start')
+  }, [])
+
+  // Log feed_view event and debug location state when tab changes
+  useEffect(() => {
+    console.log('[location] mode', tab, { deviceLocation, somewherePlace })
+    logEvent('feed_view', { mode: tab })
+  }, [tab, deviceLocation, somewherePlace])
+
+  // Handle ad insertion: when ad is armed and not yet inserted, insert it at the END of current feed
+  useEffect(() => {
+    if (isAdArmed() && !hasAdShown() && !adInserted && !adMarkedRef.current) {
+      // Capture current feed length as stable insertion point (end of visible feed)
+      const feedLength = tab === 'world' ? worldFeed.confessions.length : placeFeed.confessions.length
+      
+      adMarkedRef.current = true
+      setAdInsertIndex(feedLength) // Insert at the end of current feed
+      setAdInserted(true)
+      markAdShown()
+      if (import.meta.env.DEV) {
+        console.log('[ads] Ad inserted at index', feedLength)
+      }
+    }
+  })
 
   // FAB click: scroll to top and focus textarea
   function handleFabClick() {
@@ -270,14 +324,22 @@ function App() {
 
   // World feed - uses unified fetchFeed with mode='world'
   const loadWorld = useCallback(async (reset: boolean) => {
+    console.log('[location] fetching world feed', { deviceLocation, somewherePlace, usedLatLng: null })
     setWorldFeed((prev) => ({ ...prev, loading: true }))
     const cursor = reset ? null : worldFeed.cursor
     const result = await fetchFeed({ mode: 'world', cursor })
+    
+    // Record page fetch for pagination (not initial load)
+    if (!reset && result.confessions.length > 0) {
+      recordPageFetch()
+    }
+    
     setWorldFeed((prev) => ({
       confessions: reset ? result.confessions : [...prev.confessions, ...result.confessions],
       cursor: result.nextCursor,
       hasMore: result.hasMore,
       loading: false,
+      hasFetched: true,
     }))
   }, [worldFeed.cursor])
 
@@ -297,6 +359,7 @@ function App() {
       return
     }
 
+    console.log('[location] fetching somewhere feed', { deviceLocation, somewherePlace, usedLatLng: { lat: place.lat, lng: place.lng } })
     console.log('[loadPlace]', place.name, reset ? '(reset)' : '(more)', `radius=${radiusM}m`)
     setPlaceFeed((prev) => ({ ...prev, loading: true }))
     const cursor = reset ? null : placeFeed.cursor
@@ -307,11 +370,18 @@ function App() {
       radiusM,
       cursor,
     })
+    
+    // Record page fetch for pagination (not initial load)
+    if (!reset && result.confessions.length > 0) {
+      recordPageFetch()
+    }
+    
     setPlaceFeed((prev) => ({
       confessions: reset ? result.confessions : [...prev.confessions, ...result.confessions],
       cursor: result.nextCursor,
       hasMore: result.hasMore,
       loading: false,
+      hasFetched: true,
     }))
   }, [placeFeed.cursor])
 
@@ -319,6 +389,7 @@ function App() {
   // On initial fetch (reset=true): try progressively larger radii until MIN_RESULTS or MAX_ATTEMPTS
   // On pagination (reset=false): use the stored nearMeRadius
   const loadNearMe = useCallback(async (lat: number, lng: number, reset: boolean) => {
+    console.log('[location] fetching near feed', { deviceLocation, somewherePlace, usedLatLng: { lat, lng } })
     console.log('[nearMe] load', reset ? '(reset, auto-expand)' : '(more)')
     setPlaceFeed((prev) => ({ ...prev, loading: true }))
 
@@ -333,11 +404,18 @@ function App() {
         radiusM: nearMeRadius,
         cursor,
       })
+      
+      // Record page fetch for pagination (not initial load)
+      if (result.confessions.length > 0) {
+        recordPageFetch()
+      }
+      
       setPlaceFeed((prev) => ({
         confessions: [...prev.confessions, ...result.confessions],
         cursor: result.nextCursor,
         hasMore: result.hasMore,
         loading: false,
+        hasFetched: true,
       }))
       return
     }
@@ -372,6 +450,7 @@ function App() {
           cursor: result.nextCursor,
           hasMore: result.hasMore,
           loading: false,
+          hasFetched: true,
         })
         return
       }
@@ -394,6 +473,7 @@ function App() {
       cursor: result.nextCursor,
       hasMore: result.hasMore,
       loading: false,
+      hasFetched: true,
     })
   }, [placeFeed.cursor, nearMeRadius])
 
@@ -404,17 +484,10 @@ function App() {
     setError('')
     setNotice('')
 
-    // If we already have location, set place and load with auto-expand
-    if (userLocation) {
-      console.log('[near] using existing location:', userLocation)
-      const place: ResolvedPlace = {
-        query: 'near me',
-        name: 'Near you',
-        lat: userLocation.lat,
-        lng: userLocation.lng,
-      }
-      setCurrentPlace(place)
-      loadNearMe(userLocation.lat, userLocation.lng, true)
+    // If we already have device location, use it directly (never use somewherePlace)
+    if (deviceLocation) {
+      console.log('[location] mode near', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
+      loadNearMe(deviceLocation.lat, deviceLocation.lng, true)
       return
     }
 
@@ -441,19 +514,13 @@ function App() {
         const lng = pos.coords.longitude
         console.log('[near] success:', lat, lng)
 
-        setUserLocation({ lat, lng })
+        // Store device location (NEVER overwritten by Somewhere)
+        setDeviceLocation({ lat, lng })
         setGeoStatus('granted')
         setGeoError(null)
 
-        const place: ResolvedPlace = {
-          query: 'near me',
-          name: 'Near you',
-          lat,
-          lng,
-        }
-        setCurrentPlace(place)
+        console.log('[location] mode near', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
         loadNearMe(lat, lng, true)
-        console.log('[near] place set:', place.name)
       },
       (err) => {
         console.log('[near] error:', err.code, err.message)
@@ -484,7 +551,8 @@ function App() {
     const cached = getCachedPlace(query)
     if (cached) {
       console.log('[somewhere] cache HIT:', cached.name)
-      setCurrentPlace(cached)
+      setSomewherePlace(cached)
+      console.log('[location] mode somewhere', { deviceLocation, somewherePlace: cached, usedLatLng: { lat: cached.lat, lng: cached.lng } })
       loadPlace(cached, true)
       return
     }
@@ -502,10 +570,11 @@ function App() {
       console.log('[somewhere] result:', result)
 
       if (result.ok) {
-        // Success: set place and load
+        // Success: set somewherePlace (NEVER touch deviceLocation)
         const place: ResolvedPlace = { query, name: result.place.name, lat: result.place.lat, lng: result.place.lng }
         setCachedPlace(place)
-        setCurrentPlace(place)
+        setSomewherePlace(place)
+        console.log('[location] mode somewhere', { deviceLocation, somewherePlace: place, usedLatLng: { lat: place.lat, lng: place.lng } })
         loadPlace(place, true)
         console.log('[somewhere] place set:', place.name)
       } else if (result.reason === 'NOT_FOUND') {
@@ -531,18 +600,12 @@ function App() {
     setError('')
     setNotice('Could not find that place — listening near you instead.')
 
-    // If we already have userLocation, use it immediately
-    if (userLocation) {
-      console.log('[fallback] using existing location:', userLocation)
-      const place: ResolvedPlace = {
-        query: 'near me',
-        name: 'Near you',
-        lat: userLocation.lat,
-        lng: userLocation.lng,
-      }
-      setCurrentPlace(place)
+    // If we already have deviceLocation, use it immediately (never use somewherePlace)
+    if (deviceLocation) {
+      console.log('[fallback] using existing deviceLocation:', deviceLocation)
       setTab('near')
-      loadNearMe(userLocation.lat, userLocation.lng, true)
+      console.log('[location] mode near (fallback)', { deviceLocation, somewherePlace, usedLatLng: deviceLocation })
+      loadNearMe(deviceLocation.lat, deviceLocation.lng, true)
       return
     }
 
@@ -572,17 +635,12 @@ function App() {
         const lng = pos.coords.longitude
         console.log('[fallback] location success:', lat, lng)
 
-        setUserLocation({ lat, lng })
+        // Store device location (NEVER overwritten by Somewhere)
+        setDeviceLocation({ lat, lng })
         setGeoStatus('granted')
         setGeoError(null)
 
-        const place: ResolvedPlace = {
-          query: 'near me',
-          name: 'Near you',
-          lat,
-          lng,
-        }
-        setCurrentPlace(place)
+        console.log('[location] mode near (fallback)', { deviceLocation: { lat, lng }, somewherePlace, usedLatLng: { lat, lng } })
         loadNearMe(lat, lng, true)
       },
       (err) => {
@@ -603,12 +661,13 @@ function App() {
     )
   }
 
-  // Pick a popular place
+  // Pick a popular place (for Somewhere mode only)
   function handlePickPlace(place: CachedPlace) {
     console.log('[somewhere] picked:', place.name)
     const resolved: ResolvedPlace = { query: place.name, name: place.name, lat: place.lat, lng: place.lng }
-    setCurrentPlace(resolved)
+    setSomewherePlace(resolved)
     setCachedPlace(resolved)
+    console.log('[location] mode somewhere (picked)', { deviceLocation, somewherePlace: resolved, usedLatLng: { lat: resolved.lat, lng: resolved.lng } })
     loadPlace(resolved, true)
   }
 
@@ -620,27 +679,34 @@ function App() {
     }
   }
 
-  // Handle rules modal continue
-  function handleRulesContinue() {
-    if (rulesChecked) {
-      acknowledgeRules()
-      setShowRulesModal(false)
-    }
-  }
-
   // Submit confession
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (showRulesModal) return // Guard: must acknowledge rules first
+
+    // Log post attempt
+    logEvent('post_attempt', { mode: tab })
+
     if (!supabase) return
-    if (!userLocation) {
-      setError('Location required to confess. Tap "Near me" first.')
-      return
-    }
+
+    // ALWAYS use device GPS coords for posting (not somewherePlace coords)
+    // This ensures confessions appear in "Near me" based on where user physically is,
+    // regardless of which feed they're viewing when posting.
+    const postLat = deviceLocation?.lat
+    const postLng = deviceLocation?.lng
+    const placeLabel = deviceLocation ? 'Near you' : undefined
+
+    // Debug log showing what coords we're using for this post
+    console.log('[submit] posting confession', { 
+      mode: tab, 
+      deviceLocation, 
+      somewherePlace, 
+      usedLatLng: postLat && postLng ? { lat: postLat, lng: postLng } : null 
+    })
 
     const trimmed = text.trim()
     if (!trimmed) {
       setError('Write something first.')
+      logEvent('post_reject', { mode: tab, reason_bucket: 'validation' })
       return
     }
 
@@ -648,21 +714,29 @@ function App() {
     setError('')
     setNotice('')
 
-    // Determine place label from current listening context
-    const placeLabel = currentPlace?.name || (userLocation ? 'Near you' : undefined)
-
     const result: InsertConfessionResult = await insertConfession({
       text: trimmed,
       placeLabel,
-      lat: userLocation.lat,
-      lng: userLocation.lng,
+      lat: postLat,
+      lng: postLng,
     })
 
     if (!result.ok) {
       setError(result.message)
       setSubmitting(false)
+      // Map error type to rejection reason bucket
+      const reasonBucket = 
+        result.error === 'CONTENT_BLOCKED' || result.error === 'EMPTY_TEXT' || result.error === 'TEXT_TOO_LONG'
+          ? 'validation'
+          : result.error === 'RATE_LIMIT'
+            ? 'rate_limit'
+            : 'network'
+      logEvent('post_reject', { mode: tab, reason_bucket: reasonBucket })
       return
     }
+
+    // Log success
+    logEvent('post_success', { mode: tab })
 
     setText('')
     setSubmitting(false)
@@ -674,7 +748,7 @@ function App() {
         ...prev,
         confessions: [newConfession, ...prev.confessions],
       }))
-    } else if (currentPlace) {
+    } else if (tab === 'near' || tab === 'somewhere') {
       setPlaceFeed(prev => ({
         ...prev,
         confessions: [newConfession, ...prev.confessions],
@@ -687,13 +761,27 @@ function App() {
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
-  const canSubmit = supabase && text.trim() && userLocation && !submitting && !showRulesModal
+  // canSubmit: always use device GPS for coords (not somewherePlace)
+  // - world: can post without location (appears only in World)
+  // - near: requires deviceLocation (so it appears in Near me)
+  // - somewhere: can post without deviceLocation (uses device GPS if available)
+  const canSubmit = supabase && text.trim() && !submitting && (
+    tab === 'world' ||
+    tab === 'somewhere' ||
+    (tab === 'near' && deviceLocation)
+  )
 
   // Current feed based on tab
   const currentFeed = tab === 'world' ? worldFeed : placeFeed
 
-  // Show "Listening in" for both near and somewhere tabs
-  const showListeningIn = (tab === 'near' || tab === 'somewhere') && currentPlace
+  // Derive listening label based on mode (NEVER cross-contaminate coords)
+  let listeningLabel: string | null = null
+  if (tab === 'near' && deviceLocation) {
+    listeningLabel = 'Near you'
+  } else if (tab === 'somewhere' && somewherePlace) {
+    listeningLabel = somewherePlace.name
+  }
+  const showListeningIn = listeningLabel !== null
 
   return (
     <main>
@@ -703,18 +791,21 @@ function App() {
         <button
           className="topbar-share"
           onClick={handleShare}
-          aria-label="Share"
+          aria-label="Share Confess"
           title="Share"
         >
-          <HushIcon />
+          <ShareIcon />
         </button>
       </header>
 
       <h1>If no one ever knew, I would…</h1>
-      <p className="subheading">Read what people would never admit. Anywhere.</p>
+      <p className="subheading">A place for the thoughts you never say out loud.</p>
 
       <form onSubmit={handleSubmit}>
         <textarea
+          id="confessionText"
+          name="confessionText"
+          aria-label="Write your confession"
           ref={textareaRef}
           value={text}
           onChange={(e) => setText(e.target.value.slice(0, MAX_LENGTH))}
@@ -736,13 +827,13 @@ function App() {
       </form>
 
       {!supabase && <p className="notice">Supabase not configured yet.</p>}
-      {!userLocation && geoStatus === 'idle' && (
+      {!deviceLocation && geoStatus === 'idle' && (
         <p className="notice">Tap "Near me" to enable location.</p>
       )}
       {notice && <p className="notice">{notice}</p>}
       {error && <p className="error">{error}</p>}
 
-      <div className="tabs">
+      <div className={`tabs${showListeningIn ? ' tabs--listening' : ''}`}>
         <button className={tab === 'world' ? 'active' : ''} onClick={() => setTab('world')}>
           World
         </button>
@@ -760,7 +851,7 @@ function App() {
 
       {showListeningIn && (
         <p className="notice">
-          Listening in: {currentPlace.name}
+          Listening in: {listeningLabel}
           {tab === 'near' && ` · ${formatRadius(nearMeRadius)}`}
         </p>
       )}
@@ -769,6 +860,9 @@ function App() {
         <div className="somewhere">
           <div className="somewhere-input">
             <input
+              id="somewherePlace"
+              name="somewherePlace"
+              aria-label="City or place"
               type="text"
               placeholder="City or place"
               value={somewhereQuery}
@@ -781,7 +875,7 @@ function App() {
 
           {resolvingPlace && <p className="notice">Looking up place...</p>}
 
-          {!currentPlace && popularPlaces.length > 0 && (
+          {!somewherePlace && popularPlaces.length > 0 && (
             <div className="popular-places">
               <p className="notice">Pick a place to start:</p>
               <div className="place-buttons">
@@ -797,7 +891,7 @@ function App() {
         </div>
       )}
 
-      {tab === 'near' && !userLocation && geoStatus !== 'requesting' && (
+      {tab === 'near' && !deviceLocation && geoStatus !== 'requesting' && (
         <div className="geo-prompt">
           {(geoStatus === 'denied' || geoStatus === 'error') && geoError && (
             <p className="notice">{geoError}</p>
@@ -808,45 +902,85 @@ function App() {
         </div>
       )}
 
-      {/* Empty feed state */}
-      {currentFeed.confessions.length === 0 && !currentFeed.loading && (
+      {/* Empty feed state - only show after fetch attempt completes */}
+      {currentFeed.confessions.length === 0 && !currentFeed.loading && currentFeed.hasFetched && (
         (tab === 'world') ||
-        ((tab === 'near' || tab === 'somewhere') && currentPlace)
+        (tab === 'near' && deviceLocation) ||
+        (tab === 'somewhere' && somewherePlace)
       ) && (
         <div className="empty-feed">
-          <p>Nothing here right now.</p>
-          <p>Some thoughts only appear when someone is ready to say them.</p>
+          {tab === 'world' && (
+            <>
+              <p className="empty-feed-primary">Nothing here right now.</p>
+              <p className="empty-feed-secondary">It disappears.</p>
+            </>
+          )}
+          {tab === 'near' && (
+            <>
+              <p className="empty-feed-primary">Quiet where you are.</p>
+              <p className="empty-feed-secondary">Check back later.</p>
+            </>
+          )}
+          {tab === 'somewhere' && (
+            <>
+              <p className="empty-feed-primary">Nothing from this place right now.</p>
+              <p className="empty-feed-secondary">Try somewhere else.</p>
+            </>
+          )}
         </div>
       )}
 
       <ul className="confessions-list">
-        {currentFeed.confessions.map((c) => (
-          <li key={c.id} className="confession-item">
-            <div className={`confession-card${ENABLE_CARD_GLOW ? ' confession-card--glow' : ''}`}>
-              <div className="confession-header">
-                <span className="confession-text">{c.text}</span>
-                <div className="confession-menu">
-                  <button
-                    className="confession-menu-btn"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      setOpenMenuId(openMenuId === c.id ? null : c.id)
-                    }}
-                    aria-label="More options"
-                  >
-                    ···
-                  </button>
-                  {openMenuId === c.id && (
-                    <div className="confession-menu-dropdown">
-                      <button onClick={() => openReportModal(c.id)}>Report</button>
+        {(() => {
+          // Show ad at the captured insertion index (where user was when ad became armed)
+          const shouldShowAd = adInserted && adInsertIndex !== null
+          
+          const items: React.ReactNode[] = []
+          let adRendered = false
+          
+          currentFeed.confessions.forEach((c, index) => {
+            // Insert ad before this item if we've reached the insertion point
+            if (shouldShowAd && !adRendered && index === adInsertIndex) {
+              items.push(<li key="ad-card" className="confession-item"><AdCard /></li>)
+              adRendered = true
+            }
+            
+            items.push(
+              <li key={c.id} className="confession-item">
+                <div className={`confession-card${ENABLE_CARD_GLOW ? ' confession-card--glow' : ''}`}>
+                  <div className="confession-header">
+                    <span className="confession-text">{c.text}</span>
+                    <div className="confession-menu">
+                      <button
+                        className="confession-menu-btn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setOpenMenuId(openMenuId === c.id ? null : c.id)
+                        }}
+                        aria-label="More options"
+                      >
+                        ···
+                      </button>
+                      {openMenuId === c.id && (
+                        <div className="confession-menu-dropdown">
+                          <button onClick={() => openReportModal(c.id)}>Report</button>
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
+                  <span className="confession-time">{formatTime(c.created_at)}</span>
                 </div>
-              </div>
-              <span className="confession-time">{formatTime(c.created_at)}</span>
-            </div>
-          </li>
-        ))}
+              </li>
+            )
+          })
+          
+          // If ad wasn't rendered yet (index >= confessions length), append at end
+          if (shouldShowAd && !adRendered) {
+            items.push(<li key="ad-card" className="confession-item"><AdCard /></li>)
+          }
+          
+          return items
+        })()}
       </ul>
 
       {currentFeed.hasMore && !currentFeed.loading && (
@@ -854,43 +988,12 @@ function App() {
           className="load-more"
           onClick={() => {
             if (tab === 'world') loadWorld(false)
-            else if (tab === 'near' && userLocation) loadNearMe(userLocation.lat, userLocation.lng, false)
-            else if (currentPlace) loadPlace(currentPlace, false)
+            else if (tab === 'near' && deviceLocation) loadNearMe(deviceLocation.lat, deviceLocation.lng, false)
+            else if (tab === 'somewhere' && somewherePlace) loadPlace(somewherePlace, false)
           }}
         >
           Load more
         </button>
-      )}
-
-      {/* Rules Modal */}
-      {showRulesModal && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h2>Keep it abstract.</h2>
-            <ul className="modal-rules">
-              <li>No names or identifying details.</li>
-              <li>No contact info (phone numbers, emails, @handles, links).</li>
-              <li>No threats or incitement of violence.</li>
-              <li>Some posts may be removed if they break the rules.</li>
-            </ul>
-            <p className="modal-footer">Help us keep this space safe.</p>
-            <label className="modal-checkbox">
-              <input
-                type="checkbox"
-                checked={rulesChecked}
-                onChange={(e) => setRulesChecked(e.target.checked)}
-              />
-              I understand
-            </label>
-            <button
-              className="modal-continue"
-              disabled={!rulesChecked}
-              onClick={handleRulesContinue}
-            >
-              Continue
-            </button>
-          </div>
-        </div>
       )}
 
       {/* Report Modal */}
@@ -917,6 +1020,9 @@ function App() {
             {reportReason === 'other' && (
               <div className="report-details">
                 <textarea
+                  id="reportDetails"
+                  name="reportDetails"
+                  aria-label="Additional report details"
                   placeholder="Optional (max 280 characters)"
                   value={reportDetails}
                   onChange={(e) => setReportDetails(e.target.value.slice(0, 280))}
@@ -962,6 +1068,11 @@ function App() {
       {/* Toast */}
       {toast && (
         <div className="toast">{toast}</div>
+      )}
+
+      {/* Onboarding overlay */}
+      {showOnboarding && (
+        <Onboarding onComplete={handleOnboardingContinue} />
       )}
     </main>
   )

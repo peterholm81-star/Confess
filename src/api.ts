@@ -179,7 +179,7 @@ export async function insertConfession(params: InsertConfessionParams): Promise<
         return { ok: false, error: 'TEXT_TOO_LONG', message: 'Keep it under 120 characters.' }
       }
       if (msg.includes('CONTENT_BLOCKED')) {
-        return { ok: false, error: 'CONTENT_BLOCKED', message: 'Please keep it abstract. This looks like it might identify a real person.' }
+        return { ok: false, error: 'CONTENT_BLOCKED', message: 'This can\'t be shared.\nAvoid names, contact details, or anything that could identify someone.' }
       }
       if (msg.includes('RATE_LIMIT')) {
         return { ok: false, error: 'RATE_LIMIT', message: 'Slow down — try again in a few seconds.' }
